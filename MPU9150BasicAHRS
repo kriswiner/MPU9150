@@ -184,9 +184,6 @@ Adafruit_PCD8544 display = Adafruit_PCD8544(9, 8, 7, 5, 6);
 #define AK8975A_ADDRESS 0x0C //  Address of magnetometer
 #endif  
 
-#define AHRS  true          // set to false for basic data read
-#define SerialDebug false  // set to true to print serial output for debugging
-
 // Set initial input parameters
 enum Ascale {
   AFS_2G = 0,
@@ -209,19 +206,21 @@ float aRes, gRes, mRes; // scale resolutions per LSB for the sensors
   
 // Pin definitions
 int intPin = 12;  // These can be changed, 2 and 3 are the Arduinos ext int pins
-int Backlight = 58;
+#define blinkPin 13  // Blink LED on Teensy or Pro Mini when updating
+boolean blinkOn = false;
 
 int16_t accelCount[3];  // Stores the 16-bit signed accelerometer sensor output
 int16_t gyroCount[3];   // Stores the 16-bit signed gyro sensor output
 int16_t magCount[3];    // Stores the 16-bit signed magnetometer sensor output
-float magCalibration[3], magbias[3];  // Sensitivity adjustment values (factory calibration) in HEX
+ // Sensitivity adjustment values (factory calibration) in HEX
+float magCalibration[3] = {0, 0, 0,}, magbias[3] = {0, 0, 0}, accelBias[3] = {0, 0, 0,};   
 int16_t tempCount;     // Stores the raw internal chip temperature counts
 float temperature;     // temperature in degrees Centigrade
 float SelfTest[6];
 
 // global constants for 9 DoF fusion and AHRS (Attitude and Heading Reference System)
-#define GyroMeasError PI * (40.0f / 180.0f)       // gyroscope measurement error in rads/s (shown as 40 deg/s)
-#define GyroMeasDrift PI * (0.0f / 180.0f)      // gyroscope measurement drift in rad/s/s (shown as 0.0 deg/s/s)
+float GyroMeasError = PI * (40.0f / 180.0f);   // gyroscope measurement error in rads/s (start at 40 deg/s)
+float GyroMeasDrift = PI * (0.0f  / 180.0f);   // gyroscope measurement drift in rad/s/s (start at 0.0 deg/s/s)
 // There is a tradeoff in the beta parameter between accuracy and response speed.
 // In the original Madgwick study, beta of 0.041 (corresponding to GyroMeasError of 2.7 degrees/s) was found to give optimal accuracy.
 // However, with this value, the LSM9SD0 response time is about 10 seconds to a stable initial quaternion.
@@ -230,8 +229,8 @@ float SelfTest[6];
 // I haven't noticed any reduction in solution accuracy. This is essentially the I coefficient in a PID control sense; 
 // the bigger the feedback coefficient, the faster the solution converges, usually at the expense of accuracy. 
 // In any case, this is the free parameter in the Madgwick filtering and fusion scheme.
-#define beta sqrt(3.0f / 4.0f) * GyroMeasError   // compute beta
-#define zeta sqrt(3.0f / 4.0f) * GyroMeasDrift   // compute zeta, the other free parameter in the Madgwick scheme usually set to a small or zero value
+float beta = sqrt(3.0f / 4.0f) * GyroMeasError;   // compute beta
+float zeta = sqrt(3.0f / 4.0f) * GyroMeasDrift;   // compute zeta, the other free parameter in the Madgwick scheme usually set to a small or zero value
 #define Kp 2.0f * 5.0f // these are the free parameters in the Mahony filter and fusion scheme, Kp for proportional feedback, Ki for integral
 #define Ki 0.0f
 
@@ -243,8 +242,8 @@ uint32_t MagRate;    // read rate for magnetometer data
 float pitch, yaw, roll;
 float deltat = 0.0f;        // integration interval for both filter schemes
 
-uint32_t lastUpdate = 0; // used to calculate integration interval
-uint32_t now = 0;        // used to calculate integration interval
+uint32_t lastUpdate = 0, firstUpdate = 0; // used to calculate integration interval
+uint32_t Now = 0;        // used to calculate integration interval
 
 float ax, ay, az, gx, gy, gz, mx, my, mz; // variables to hold latest sensor data values 
 float q[4] = {1.0f, 0.0f, 0.0f, 0.0f};    // vector to hold quaternion
@@ -258,6 +257,8 @@ void setup()
   // Set up the interrupt pin, its set as active high, push-pull
   pinMode(intPin, INPUT);
   digitalWrite(intPin, LOW);
+  pinMode(blinkPin, OUTPUT);
+  digitalWrite(blinkPin, HIGH);
   
   display.begin(); // Initialize the display
   display.setContrast(55); // Set the contrast
@@ -307,7 +308,7 @@ void setup()
   delay(1000);
   }
   
-  calibrateMPU9150(); // Calibrate gyro and accelerometers, load biases in bias registers  
+  calibrateMPU9150(accelBias); // Calibrate gyro and accelerometers, load biases in bias registers  
   initMPU9150(); // Inititalize and configure accelerometer and gyroscope
   Serial.println("MPU9150 initialized for active data mode...."); // Initialize device for active mode read of acclerometer, gyroscope, and temperature
   
@@ -324,12 +325,10 @@ void setup()
   
   // Get magnetometer calibration from AK8975A ROM
   initAK8975A(magCalibration);
-  if(SerialDebug) {
   Serial.println("Magnetometer calibration values: ");
   Serial.print("X-Axis sensitivity adjustment value "); Serial.println(magCalibration[0], 2);
   Serial.print("Y-Axis sensitivity adjustment value "); Serial.println(magCalibration[1], 2);
   Serial.print("Z-Axis sensitivity adjustment value "); Serial.println(magCalibration[2], 2); 
-  }
  
   display.clearDisplay();
   display.setCursor(20,0); display.print("AK8975A");
@@ -358,16 +357,16 @@ void loop()
     getAres();
     
     // Now we'll calculate the accleration value into actual g's
-    ax = (float)accelCount[0]*aRes;  // get actual g value, this depends on scale being set
-    ay = (float)accelCount[1]*aRes;  // also subtract averaged accelerometer biases
-    az = (float)accelCount[2]*aRes;  
+    ax = (float)accelCount[0]*aRes - accelBias[0];  // get actual g value, this depends on scale being set
+    ay = (float)accelCount[1]*aRes - accelBias[1];  // also subtract averaged accelerometer biases
+    az = (float)accelCount[2]*aRes - accelBias[2];  
    
     readGyroData(gyroCount);  // Read the x/y/z adc values
     getGres();
  
     // Calculate the gyro value into actual degrees per second
     gx = (float)gyroCount[0]*gRes;  // get actual gyro value, this depends on scale being set
-    gy = (float)gyroCount[1]*gRes;  // also subtract averaged gyro biases
+    gy = (float)gyroCount[1]*gRes;  
     gz = (float)gyroCount[2]*gRes;   
  
     mcount++;
@@ -387,16 +386,14 @@ void loop()
     mz = (float)magCount[2]*mRes*magCalibration[2] - magbias[2];   
     mcount = 0;
     }
-    
-    if(!AHRS) {
-    tempCount = readTempData();  // Read the x/y/z adc values
-    temperature = ((float) tempCount) / 340. + 36.53; // Temperature in degrees Centigrade
-    }
  }
  
-  now = micros();
-  deltat = ((now - lastUpdate)/1000000.0f); // set integration time by time elapsed since last filter update
-  lastUpdate = now;
+  Now = micros();
+  deltat = ((Now - lastUpdate)/1000000.0f); // set integration time by time elapsed since last filter update
+  lastUpdate = Now;
+    if(lastUpdate - firstUpdate > 10000000.0f) {
+    beta = 0.041;
+    }
   // Sensors x (y)-axis of the accelerometer is aligned with the y (x)-axis of the magnetometer;
   // the magnetometer z-axis (+ down) is opposite to z-axis (+ up) of accelerometer and gyro!
   // We have to make some allowance for this orientation mismatch in feeding the output to the quaternion filter.
@@ -407,81 +404,29 @@ void loop()
    MadgwickQuaternionUpdate(ax, ay, az, gx*PI/180.0f, gy*PI/180.0f, gz*PI/180.0f,  my,  mx, mz);
 // MahonyQuaternionUpdate(ax, ay, az, gx*PI/180.0f, gy*PI/180.0f, gz*PI/180.0f, my, mx, mz);
 
-
-    if (!AHRS) {
-    int delt_t = millis() - count;
-    if(delt_t > 500) {
-
-      if(SerialDebug) {
-    // Print acceleration values in milligs!
-    Serial.print("X-acceleration: "); Serial.print(1000*ax); Serial.print(" mg "); 
-    Serial.print("Y-acceleration: "); Serial.print(1000*ay); Serial.print(" mg "); 
-    Serial.print("Z-acceleration: "); Serial.print(1000*az); Serial.println(" mg"); 
- 
-    // Print gyro values in degree/sec
-    Serial.print("X-gyro rate: "); Serial.print(gx, 3); Serial.print(" degrees/sec "); 
-    Serial.print("Y-gyro rate: "); Serial.print(gy, 3); Serial.print(" degrees/sec "); 
-    Serial.print("Z-gyro rate: "); Serial.print(gz, 3); Serial.println(" degrees/sec"); 
-    
-    // Print mag values in degree/sec
-    Serial.print("X-mag field: "); Serial.print(mx); Serial.print(" mG "); 
-    Serial.print("Y-mag field: "); Serial.print(my); Serial.print(" mG "); 
-    Serial.print("Z-mag field: "); Serial.print(mz); Serial.println(" mG"); 
- 
-   // Print temperature in degrees Centigrade      
-    Serial.print("Temperature is ");  Serial.print(temperature, 1);  Serial.println(" degrees C"); // Print T values to tenths of s degree C
-    Serial.println("");
-    }
-      
-    display.clearDisplay();
-     
-    display.setCursor(0, 0); display.print("MPU9150/AK8975");
-    display.setCursor(0, 8); display.print(" x   y   z  ");
-
-    display.setCursor(0,  16); display.print((int)(1000*ax)); 
-    display.setCursor(24, 16); display.print((int)(1000*ay)); 
-    display.setCursor(48, 16); display.print((int)(1000*az)); 
-    display.setCursor(72, 16); display.print("mg");
-    
-    display.setCursor(0,  24); display.print((int)(gx)); 
-    display.setCursor(24, 24); display.print((int)(gy)); 
-    display.setCursor(48, 24); display.print((int)(gz)); 
-    display.setCursor(66, 24); display.print("o/s");    
-        
-    display.setCursor(0,  32); display.print((int)(mx)); 
-    display.setCursor(24, 32); display.print((int)(my)); 
-    display.setCursor(48, 32); display.print((int)(mz)); 
-    display.setCursor(72, 32); display.print("mG");   
-   
-    display.setCursor(0,  40); display.print("Gyro T "); 
-    display.setCursor(50, 40); display.print(temperature, 1); display.print(" C");
-    display.display();
-    
-    count = millis();
-    }
-    }
-    else {
-      
     // Serial print and/or display at 0.5 s rate independent of data rates
     delt_t = millis() - count;
     if (delt_t > 500) { // update LCD once per half-second independent of read rate
-
-    if(SerialDebug) {
-    Serial.print("ax = "); Serial.print((int)1000*ax);  
-    Serial.print(" ay = "); Serial.print((int)1000*ay); 
-    Serial.print(" az = "); Serial.print((int)1000*az); Serial.println(" mg");
-    Serial.print("gx = "); Serial.print( gx, 2); 
-    Serial.print(" gy = "); Serial.print( gy, 2); 
-    Serial.print(" gz = "); Serial.print( gz, 2); Serial.println(" deg/s");
-    Serial.print("mx = "); Serial.print( (int)mx ); 
-    Serial.print(" my = "); Serial.print( (int)my ); 
-    Serial.print(" mz = "); Serial.print( (int)mz ); Serial.println(" mG");
+    digitalWrite(blinkPin, blinkOn);
     
+    Serial.print("ax = "); Serial.print(1000*ax);  
+    Serial.print(" ay = "); Serial.print(1000*ay); 
+    Serial.print(" az = "); Serial.print(1000*az); Serial.println(" mg");
+    Serial.print("gx = "); Serial.print(gx, 2); 
+    Serial.print(" gy = "); Serial.print(gy, 2); 
+    Serial.print(" gz = "); Serial.print(gz, 2); Serial.println(" deg/s");
+    Serial.print("mx = "); Serial.print(mx); 
+    Serial.print(" my = "); Serial.print(my); 
+    Serial.print(" mz = "); Serial.print(mz); Serial.println(" mG");
+    
+    tempCount = readTempData();  // Read the x/y/z adc values
+    temperature = ((float) tempCount) / 340. + 36.53; // Temperature in degrees Centigrade
+ //   Serial.print(" T = "); Serial.print(temperature, 1); Serial.println(" C");
+        
     Serial.print("q0 = "); Serial.print(q[0]);
     Serial.print(" qx = "); Serial.print(q[1]); 
     Serial.print(" qy = "); Serial.print(q[2]); 
-    Serial.print(" qz = "); Serial.println(q[3]); 
-    }               
+    Serial.print(" qz = "); Serial.println(q[3]);         
     
   // Define output variables from updated quaternion---these are Tait-Bryan angles, commonly used in aircraft orientation.
   // In this coordinate system, the positive z-axis is down toward Earth. 
@@ -500,7 +445,6 @@ void loop()
     yaw   -= 13.8; // Declination at Danville, California is 13 degrees 48 minutes and 47 seconds on 2014-04-04
     roll  *= 180.0f / PI;
 
-    if(SerialDebug) {
     Serial.print("Yaw, Pitch, Roll: ");
     Serial.print(yaw, 2);
     Serial.print(", ");
@@ -508,8 +452,7 @@ void loop()
     Serial.print(", ");
     Serial.println(roll, 2);
 
-    Serial.print("average rate = "); Serial.print(1.0f/deltat, 2); Serial.println(" Hz");
-    }
+ //   Serial.print("average rate = "); Serial.print(1.0f/deltat, 2); Serial.println(" Hz");
     
     display.clearDisplay();
       
@@ -548,10 +491,10 @@ void loop()
     // The 3.3 V 8 MHz Pro Mini is doing pretty well!
     // Display 0.5-second average filter rate
     display.setCursor(0, 40); display.print("rt: "); display.print(1.0f/deltat, 2); display.print(" Hz"); 
- 
     display.display();
+    
+    blinkOn = ~blinkOn;
     count = millis();  
-    }
 }
 
 }
@@ -629,7 +572,7 @@ void readMagData(int16_t * destination)
   delay(10);
   // Only accept a new magnetometer data read if the data ready bit is set and 
   // if there are no sensor overflow or data read errors
-  if(readByte(AK8975A_ADDRESS, AK8975A_ST1) & 0x01) { // wait for magnetometer data ready bit to be set
+  if(readByte(AK8975A_ADDRESS, AK8975A_ST1) && 0x01) { // wait for magnetometer data ready bit to be set
   readBytes(AK8975A_ADDRESS, AK8975A_XOUT_L, 6, &rawData[0]);  // Read the six raw data registers sequentially into data array
   destination[0] = ((int16_t)rawData[1] << 8) | rawData[0] ;  // Turn the MSB and LSB into a signed 16-bit value
   destination[1] = ((int16_t)rawData[3] << 8) | rawData[2] ;  
@@ -657,202 +600,6 @@ int16_t readTempData()
   return ((int16_t)rawData[0] << 8) | rawData[1] ;  // Turn the MSB and LSB into a 16-bit value
 }
 
-
-// Implementation of Sebastian Madgwick's "...efficient orientation filter for... inertial/magnetic sensor arrays"
-// (see http://www.x-io.co.uk/category/open-source/ for examples and more details)
-// which fuses acceleration, rotation rate, and magnetic moments to produce a quaternion-based estimate of absolute
-// device orientation -- which can be converted to yaw, pitch, and roll. Useful for stabilizing quadcopters, etc.
-// The performance of the orientation filter is at least as good as conventional Kalman-based filtering algorithms
-// but is much less computationally intensive---it can be performed on a 3.3 V Pro Mini operating at 8 MHz!
-        void MadgwickQuaternionUpdate(float ax, float ay, float az, float gx, float gy, float gz, float mx, float my, float mz)
-        {
-            float q1 = q[0], q2 = q[1], q3 = q[2], q4 = q[3];   // short name local variable for readability
-            float norm;
-            float hx, hy, _2bx, _2bz;
-            float s1, s2, s3, s4;
-            float qDot1, qDot2, qDot3, qDot4;
-
-            // Auxiliary variables to avoid repeated arithmetic
-            float _2q1mx;
-            float _2q1my;
-            float _2q1mz;
-            float _2q2mx;
-            float _4bx;
-            float _4bz;
-            float _2q1 = 2.0f * q1;
-            float _2q2 = 2.0f * q2;
-            float _2q3 = 2.0f * q3;
-            float _2q4 = 2.0f * q4;
-            float _2q1q3 = 2.0f * q1 * q3;
-            float _2q3q4 = 2.0f * q3 * q4;
-            float q1q1 = q1 * q1;
-            float q1q2 = q1 * q2;
-            float q1q3 = q1 * q3;
-            float q1q4 = q1 * q4;
-            float q2q2 = q2 * q2;
-            float q2q3 = q2 * q3;
-            float q2q4 = q2 * q4;
-            float q3q3 = q3 * q3;
-            float q3q4 = q3 * q4;
-            float q4q4 = q4 * q4;
-
-            // Normalise accelerometer measurement
-            norm = sqrt(ax * ax + ay * ay + az * az);
-            if (norm == 0.0f) return; // handle NaN
-            norm = 1.0f/norm;
-            ax *= norm;
-            ay *= norm;
-            az *= norm;
-
-            // Normalise magnetometer measurement
-            norm = sqrt(mx * mx + my * my + mz * mz);
-            if (norm == 0.0f) return; // handle NaN
-            norm = 1.0f/norm;
-            mx *= norm;
-            my *= norm;
-            mz *= norm;
-
-            // Reference direction of Earth's magnetic field
-            _2q1mx = 2.0f * q1 * mx;
-            _2q1my = 2.0f * q1 * my;
-            _2q1mz = 2.0f * q1 * mz;
-            _2q2mx = 2.0f * q2 * mx;
-            hx = mx * q1q1 - _2q1my * q4 + _2q1mz * q3 + mx * q2q2 + _2q2 * my * q3 + _2q2 * mz * q4 - mx * q3q3 - mx * q4q4;
-            hy = _2q1mx * q4 + my * q1q1 - _2q1mz * q2 + _2q2mx * q3 - my * q2q2 + my * q3q3 + _2q3 * mz * q4 - my * q4q4;
-            _2bx = sqrt(hx * hx + hy * hy);
-            _2bz = -_2q1mx * q3 + _2q1my * q2 + mz * q1q1 + _2q2mx * q4 - mz * q2q2 + _2q3 * my * q4 - mz * q3q3 + mz * q4q4;
-            _4bx = 2.0f * _2bx;
-            _4bz = 2.0f * _2bz;
-
-            // Gradient decent algorithm corrective step
-            s1 = -_2q3 * (2.0f * q2q4 - _2q1q3 - ax) + _2q2 * (2.0f * q1q2 + _2q3q4 - ay) - _2bz * q3 * (_2bx * (0.5f - q3q3 - q4q4) + _2bz * (q2q4 - q1q3) - mx) + (-_2bx * q4 + _2bz * q2) * (_2bx * (q2q3 - q1q4) + _2bz * (q1q2 + q3q4) - my) + _2bx * q3 * (_2bx * (q1q3 + q2q4) + _2bz * (0.5f - q2q2 - q3q3) - mz);
-            s2 = _2q4 * (2.0f * q2q4 - _2q1q3 - ax) + _2q1 * (2.0f * q1q2 + _2q3q4 - ay) - 4.0f * q2 * (1.0f - 2.0f * q2q2 - 2.0f * q3q3 - az) + _2bz * q4 * (_2bx * (0.5f - q3q3 - q4q4) + _2bz * (q2q4 - q1q3) - mx) + (_2bx * q3 + _2bz * q1) * (_2bx * (q2q3 - q1q4) + _2bz * (q1q2 + q3q4) - my) + (_2bx * q4 - _4bz * q2) * (_2bx * (q1q3 + q2q4) + _2bz * (0.5f - q2q2 - q3q3) - mz);
-            s3 = -_2q1 * (2.0f * q2q4 - _2q1q3 - ax) + _2q4 * (2.0f * q1q2 + _2q3q4 - ay) - 4.0f * q3 * (1.0f - 2.0f * q2q2 - 2.0f * q3q3 - az) + (-_4bx * q3 - _2bz * q1) * (_2bx * (0.5f - q3q3 - q4q4) + _2bz * (q2q4 - q1q3) - mx) + (_2bx * q2 + _2bz * q4) * (_2bx * (q2q3 - q1q4) + _2bz * (q1q2 + q3q4) - my) + (_2bx * q1 - _4bz * q3) * (_2bx * (q1q3 + q2q4) + _2bz * (0.5f - q2q2 - q3q3) - mz);
-            s4 = _2q2 * (2.0f * q2q4 - _2q1q3 - ax) + _2q3 * (2.0f * q1q2 + _2q3q4 - ay) + (-_4bx * q4 + _2bz * q2) * (_2bx * (0.5f - q3q3 - q4q4) + _2bz * (q2q4 - q1q3) - mx) + (-_2bx * q1 + _2bz * q3) * (_2bx * (q2q3 - q1q4) + _2bz * (q1q2 + q3q4) - my) + _2bx * q2 * (_2bx * (q1q3 + q2q4) + _2bz * (0.5f - q2q2 - q3q3) - mz);
-            norm = sqrt(s1 * s1 + s2 * s2 + s3 * s3 + s4 * s4);    // normalise step magnitude
-            norm = 1.0f/norm;
-            s1 *= norm;
-            s2 *= norm;
-            s3 *= norm;
-            s4 *= norm;
-
-            // Compute rate of change of quaternion
-            qDot1 = 0.5f * (-q2 * gx - q3 * gy - q4 * gz) - beta * s1;
-            qDot2 = 0.5f * (q1 * gx + q3 * gz - q4 * gy) - beta * s2;
-            qDot3 = 0.5f * (q1 * gy - q2 * gz + q4 * gx) - beta * s3;
-            qDot4 = 0.5f * (q1 * gz + q2 * gy - q3 * gx) - beta * s4;
-
-            // Integrate to yield quaternion
-            q1 += qDot1 * deltat;
-            q2 += qDot2 * deltat;
-            q3 += qDot3 * deltat;
-            q4 += qDot4 * deltat;
-            norm = sqrt(q1 * q1 + q2 * q2 + q3 * q3 + q4 * q4);    // normalise quaternion
-            norm = 1.0f/norm;
-            q[0] = q1 * norm;
-            q[1] = q2 * norm;
-            q[2] = q3 * norm;
-            q[3] = q4 * norm;
-
-        }
-  
-  
-  
- // Similar to Madgwick scheme but uses proportional and integral filtering on the error between estimated reference vectors and
- // measured ones. 
-            void MahonyQuaternionUpdate(float ax, float ay, float az, float gx, float gy, float gz, float mx, float my, float mz)
-        {
-            float q1 = q[0], q2 = q[1], q3 = q[2], q4 = q[3];   // short name local variable for readability
-            float norm;
-            float hx, hy, bx, bz;
-            float vx, vy, vz, wx, wy, wz;
-            float ex, ey, ez;
-            float pa, pb, pc;
-
-            // Auxiliary variables to avoid repeated arithmetic
-            float q1q1 = q1 * q1;
-            float q1q2 = q1 * q2;
-            float q1q3 = q1 * q3;
-            float q1q4 = q1 * q4;
-            float q2q2 = q2 * q2;
-            float q2q3 = q2 * q3;
-            float q2q4 = q2 * q4;
-            float q3q3 = q3 * q3;
-            float q3q4 = q3 * q4;
-            float q4q4 = q4 * q4;   
-
-            // Normalise accelerometer measurement
-            norm = sqrt(ax * ax + ay * ay + az * az);
-            if (norm == 0.0f) return; // handle NaN
-            norm = 1.0f / norm;        // use reciprocal for division
-            ax *= norm;
-            ay *= norm;
-            az *= norm;
-
-            // Normalise magnetometer measurement
-            norm = sqrt(mx * mx + my * my + mz * mz);
-            if (norm == 0.0f) return; // handle NaN
-            norm = 1.0f / norm;        // use reciprocal for division
-            mx *= norm;
-            my *= norm;
-            mz *= norm;
-
-            // Reference direction of Earth's magnetic field
-            hx = 2.0f * mx * (0.5f - q3q3 - q4q4) + 2.0f * my * (q2q3 - q1q4) + 2.0f * mz * (q2q4 + q1q3);
-            hy = 2.0f * mx * (q2q3 + q1q4) + 2.0f * my * (0.5f - q2q2 - q4q4) + 2.0f * mz * (q3q4 - q1q2);
-            bx = sqrt((hx * hx) + (hy * hy));
-            bz = 2.0f * mx * (q2q4 - q1q3) + 2.0f * my * (q3q4 + q1q2) + 2.0f * mz * (0.5f - q2q2 - q3q3);
-
-            // Estimated direction of gravity and magnetic field
-            vx = 2.0f * (q2q4 - q1q3);
-            vy = 2.0f * (q1q2 + q3q4);
-            vz = q1q1 - q2q2 - q3q3 + q4q4;
-            wx = 2.0f * bx * (0.5f - q3q3 - q4q4) + 2.0f * bz * (q2q4 - q1q3);
-            wy = 2.0f * bx * (q2q3 - q1q4) + 2.0f * bz * (q1q2 + q3q4);
-            wz = 2.0f * bx * (q1q3 + q2q4) + 2.0f * bz * (0.5f - q2q2 - q3q3);  
-
-            // Error is cross product between estimated direction and measured direction of gravity
-            ex = (ay * vz - az * vy) + (my * wz - mz * wy);
-            ey = (az * vx - ax * vz) + (mz * wx - mx * wz);
-            ez = (ax * vy - ay * vx) + (mx * wy - my * wx);
-            if (Ki > 0.0f)
-            {
-                eInt[0] += ex;      // accumulate integral error
-                eInt[1] += ey;
-                eInt[2] += ez;
-            }
-            else
-            {
-                eInt[0] = 0.0f;     // prevent integral wind up
-                eInt[1] = 0.0f;
-                eInt[2] = 0.0f;
-            }
-
-            // Apply feedback terms
-            gx = gx + Kp * ex + Ki * eInt[0];
-            gy = gy + Kp * ey + Ki * eInt[1];
-            gz = gz + Kp * ez + Ki * eInt[2];
-
-            // Integrate rate of change of quaternion
-            pa = q2;
-            pb = q3;
-            pc = q4;
-            q1 = q1 + (-q2 * gx - q3 * gy - q4 * gz) * (0.5f * deltat);
-            q2 = pa + (q1 * gx + pb * gz - pc * gy) * (0.5f * deltat);
-            q3 = pb + (q1 * gy - pa * gz + pc * gx) * (0.5f * deltat);
-            q4 = pc + (q1 * gz + pa * gy - pb * gx) * (0.5f * deltat);
-
-            // Normalise quaternion
-            norm = sqrt(q1 * q1 + q2 * q2 + q3 * q3 + q4 * q4);
-            norm = 1.0f / norm;
-            q[0] = q1 * norm;
-            q[1] = q2 * norm;
-            q[2] = q3 * norm;
-            q[3] = q4 * norm;
- 
-        }
-        
-        
 // Configure the motion detection control for low power accelerometer mode
 void LowPowerAccelOnlyMPU6050()
 {
@@ -970,13 +717,11 @@ void initMPU9150()
 
 // Function which accumulates gyro and accelerometer data after device initialization. It calculates the average
 // of the at-rest readings and then loads the resulting offsets into accelerometer and gyro bias registers.
-void calibrateMPU9150()
+void calibrateMPU9150(float * destination)
 {  
   uint8_t data[12]; // data array to hold accelerometer and gyro x, y, z, data
-  int16_t abias[6], gbias[6];
   uint8_t ii, fifo_count, packet_count;
-  int16_t gyro_bias[3]  = {0, 0, 0};
-  int16_t accel_bias[3] = {0, 0, 0};
+  int16_t gyro_bias[3]  = {0, 0, 0}, accel_bias[3] = {0, 0, 0};
   
 // reset device, reset all registers, clear gyro and accelerometer bias registers
   writeByte(MPU9150_ADDRESS, PWR_MGMT_1, 0x80); // Write a one to bit 7 reset bit; toggle reset device
@@ -1020,44 +765,43 @@ void calibrateMPU9150()
   
   for (ii = 0; ii < packet_count; ii++) {
     readBytes(MPU9150_ADDRESS, FIFO_R_W, 12, data); // read data for averaging
-    accel_bias[0] += (((int16_t)data[0] << 8) | data[1]  ) / packet_count; // Divide sum of FIFO gyro data by number of samples
-    accel_bias[1] += (((int16_t)data[2] << 8) | data[3]  ) / packet_count;
-    accel_bias[2] += (((int16_t)data[4] << 8) | data[5]  ) / packet_count;
-    gyro_bias[0]  += (((int16_t)data[6] << 8) | data[7]  ) / packet_count;
-    gyro_bias[1]  += (((int16_t)data[8] << 8) | data[9]  ) / packet_count;
-    gyro_bias[2]  += (((int16_t)data[10] << 8) | data[11]) / packet_count;
+    accel_bias[0] += (((int16_t)data[0] << 8) | data[1]); // Divide sum of FIFO gyro data by number of samples
+    accel_bias[1] += (((int16_t)data[2] << 8) | data[3]);
+    accel_bias[2] += (((int16_t)data[4] << 8) | data[5]) - accelsensitivity ; // assumes device facing up
+    gyro_bias[0]  += (((int16_t)data[6] << 8) | data[7]) ;
+    gyro_bias[1]  += (((int16_t)data[8] << 8) | data[9]) ;
+    gyro_bias[2]  += (((int16_t)data[10] << 8) | data[11]) ;
 }
-
-// Remove gravity from z-axis accelerometer bias value
-  if(accel_bias[2] > 0) {
-    accel_bias[2] -= accelsensitivity; }
-    else { 
-    accel_bias[2] += accelsensitivity; 
-  }
+    accel_bias[0] /= packet_count;  // normalize to get average count bias
+    accel_bias[1] /= packet_count;
+    accel_bias[2] /= packet_count;
+    gyro_bias[0]  /= packet_count;   
+    gyro_bias[1]  /= packet_count;
+    gyro_bias[2]  /= packet_count;
 
 // Construct the gyro biases for push to the hardware gyro bias registers, which are reset to zero upon device startup
-  gbias[0] = (-gyro_bias[0]/4  >> 8) & 0xFF; // Divide by 4 to get 32.9 LSB per deg/s to conform to expected bias input format
-  gbias[1] = (-gyro_bias[0]/4)       & 0xFF; // Biases are additive, so change sign on calculated average gyro biases
-  gbias[2] = (-gyro_bias[1]/4  >> 8) & 0xFF;
-  gbias[3] = (-gyro_bias[1]/4)       & 0xFF;
-  gbias[4] = (-gyro_bias[2]/4  >> 8) & 0xFF;
-  gbias[5] = (-gyro_bias[2]/4)       & 0xFF;
+  data[0] = (-gyro_bias[0]/4  >> 8) & 0xFF; // Divide by 4 to get 32.9 LSB per deg/s to conform to expected bias input format
+  data[1] = (-gyro_bias[0]/4)       & 0xFF; // Biases are additive, so change sign on calculated average gyro biases
+  data[2] = (-gyro_bias[1]/4  >> 8) & 0xFF;
+  data[3] = (-gyro_bias[1]/4)       & 0xFF;
+  data[4] = (-gyro_bias[2]/4  >> 8) & 0xFF;
+  data[5] = (-gyro_bias[2]/4)       & 0xFF;
   
 // Push gyro biases to hardware registers
-  writeByte(MPU9150_ADDRESS, XG_OFFS_USRH, gbias[0]);
-  writeByte(MPU9150_ADDRESS, XG_OFFS_USRL, gbias[1]);
-  writeByte(MPU9150_ADDRESS, YG_OFFS_USRH, gbias[2]);
-  writeByte(MPU9150_ADDRESS, YG_OFFS_USRL, gbias[3]);
-  writeByte(MPU9150_ADDRESS, ZG_OFFS_USRH, gbias[4]);
-  writeByte(MPU9150_ADDRESS, ZG_OFFS_USRL, gbias[5]);
+  writeByte(MPU9150_ADDRESS, XG_OFFS_USRH, data[0]);
+  writeByte(MPU9150_ADDRESS, XG_OFFS_USRL, data[1]);
+  writeByte(MPU9150_ADDRESS, YG_OFFS_USRH, data[2]);
+  writeByte(MPU9150_ADDRESS, YG_OFFS_USRL, data[3]);
+  writeByte(MPU9150_ADDRESS, ZG_OFFS_USRH, data[4]);
+  writeByte(MPU9150_ADDRESS, ZG_OFFS_USRL, data[5]);
 
 // Construct the accelerometer biases for push to the hardware accelerometer bias registers. These registers contain
 // factory trim values which must be added to the calculated accelerometer biases; on boot up these registers will hold
 // non-zero values. In addition, bit 0 of the lower byte must be preserved since it is used for temperature
-// compensation calculations. Accelerometer bias registers expect bias input as 4096 LSB per g, so that
-// the accelerometer biases calculated above must be divided by 4.
+// compensation calculations. Accelerometer bias registers expect bias input as 2048 LSB per g, so that
+// the accelerometer biases calculated above must be divided by 8.
 
-  long accel_bias_reg[3] = {0, 0, 0}; // A place to hold the factory accelerometer trim biases
+  int16_t accel_bias_reg[3] = {0, 0, 0}; // A place to hold the factory accelerometer trim biases
   readBytes(MPU9150_ADDRESS, XA_OFFSET_H, 2, &data[0]); // Read factory accelerometer trim values
   accel_bias_reg[0] = ((int16_t)data[0] << 8) | data[1];
   readBytes(MPU9150_ADDRESS, YA_OFFSET_H, 2, &data[0]);
@@ -1065,7 +809,7 @@ void calibrateMPU9150()
   readBytes(MPU9150_ADDRESS, ZA_OFFSET_H, 2, &data[0]);
   accel_bias_reg[2] = ((int16_t)data[0] << 8) | data[1];
   
-  uint32_t mask = 0x0001; // Define mask for temperature compensation bit 0 of lower byte of accelerometer bias registers
+  uint16_t mask = 0x0001; // Define mask for temperature compensation bit 0 of lower byte of accelerometer bias registers
   uint8_t mask_bit[3] = {0, 0, 0}; // Define array to hold mask bit for each accelerometer bias axis
   
   for(ii = 0; ii < 3; ii++) {
@@ -1077,24 +821,29 @@ void calibrateMPU9150()
   accel_bias_reg[1] -= accel_bias[1]/8;
   accel_bias_reg[2] -= accel_bias[2]/8;
   
-  abias[0] = (accel_bias_reg[0] >> 8) & 0xFF;
-  abias[1] = (accel_bias_reg[0])      & 0xFF;
-  abias[1] = abias[1] | mask_bit[0]; // preserve temperature compensation bit when writing back to accelerometer bias registers
-  abias[2] = (accel_bias_reg[1] >> 8) & 0xFF;
-  abias[3] = (accel_bias_reg[1])      & 0xFF;
-  abias[3] = abias[3] | mask_bit[1]; // preserve temperature compensation bit when writing back to accelerometer bias registers
-  abias[4] = (accel_bias_reg[2] >> 8) & 0xFF;
-  abias[5] = (accel_bias_reg[2])      & 0xFF;
-  abias[5] = abias[5] | mask_bit[2]; // preserve temperature compensation bit when writing back to accelerometer bias registers
+  data[0] = (accel_bias_reg[0] >> 8) & 0xFF;
+  data[1] = (accel_bias_reg[0])      & 0xFF;
+  data[1] = data[1] | mask_bit[0]; // preserve temperature compensation bit when writing back to accelerometer bias registers
+  data[2] = (accel_bias_reg[1] >> 8) & 0xFF;
+  data[3] = (accel_bias_reg[1])      & 0xFF;
+  data[3] = data[3] | mask_bit[1]; // preserve temperature compensation bit when writing back to accelerometer bias registers
+  data[4] = (accel_bias_reg[2] >> 8) & 0xFF;
+  data[5] = (accel_bias_reg[2])      & 0xFF;
+  data[5] = data[5] | mask_bit[2]; // preserve temperature compensation bit when writing back to accelerometer bias registers
  
   // Push accelerometer biases to hardware registers
-  writeByte(MPU9150_ADDRESS, XA_OFFSET_H, abias[0]);
-  writeByte(MPU9150_ADDRESS, XA_OFFSET_L_TC, abias[1]);
-  writeByte(MPU9150_ADDRESS, YA_OFFSET_H, abias[2]);
-  writeByte(MPU9150_ADDRESS, YA_OFFSET_L_TC, abias[3]);
-  writeByte(MPU9150_ADDRESS, ZA_OFFSET_H, abias[4]);
-  writeByte(MPU9150_ADDRESS, ZA_OFFSET_L_TC, abias[5]);
-}
+//  writeByte(MPU9150_ADDRESS, XA_OFFSET_H, data[0]);
+//  writeByte(MPU9150_ADDRESS, XA_OFFSET_L_TC, data[1]);
+//  writeByte(MPU9150_ADDRESS, YA_OFFSET_H, data[2]);
+//  writeByte(MPU9150_ADDRESS, YA_OFFSET_L_TC, data[3]);
+//  writeByte(MPU9150_ADDRESS, ZA_OFFSET_H, data[4]);
+ // writeByte(MPU9150_ADDRESS, ZA_OFFSET_L_TC, data[5]);
+
+// Output scaled accelerometer biases for subtraction in the main program
+    destination[0] = (float)accel_bias[0]/(float)accelsensitivity; 
+    destination[1] = (float)accel_bias[1]/(float)accelsensitivity;
+    destination[2] = (float)accel_bias[2]/(float)accelsensitivity;
+  }
 
 
 // Accelerometer and gyroscope self test; check calibration wrt factory settings
@@ -1142,8 +891,8 @@ void MPU6050SelfTest(float * destination) // Should return percent deviation fro
    
 }
 
-  // Wire.h read and write protocols
-  void writeByte(uint8_t address, uint8_t subAddress, uint8_t data)
+        // Wire.h read and write protocols
+        void writeByte(uint8_t address, uint8_t subAddress, uint8_t data)
 {
 	Wire.beginTransmission(address);  // Initialize the Tx buffer
 	Wire.write(subAddress);           // Put slave register address in Tx buffer
@@ -1151,7 +900,7 @@ void MPU6050SelfTest(float * destination) // Should return percent deviation fro
 	Wire.endTransmission();           // Send the Tx buffer
 }
 
-  uint8_t readByte(uint8_t address, uint8_t subAddress)
+        uint8_t readByte(uint8_t address, uint8_t subAddress)
 {
 	uint8_t data; // `data` will store the register data	 
 	Wire.beginTransmission(address);         // Initialize the Tx buffer
@@ -1162,7 +911,7 @@ void MPU6050SelfTest(float * destination) // Should return percent deviation fro
 	return data;                             // Return data read from slave register
 }
 
-  void readBytes(uint8_t address, uint8_t subAddress, uint8_t count, uint8_t * dest)
+        void readBytes(uint8_t address, uint8_t subAddress, uint8_t count, uint8_t * dest)
 {  
 	Wire.beginTransmission(address);   // Initialize the Tx buffer
 	Wire.write(subAddress);            // Put slave register address in Tx buffer
