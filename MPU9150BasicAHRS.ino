@@ -184,6 +184,9 @@ Adafruit_PCD8544 display = Adafruit_PCD8544(9, 8, 7, 5, 6);
 #define AK8975A_ADDRESS 0x0C //  Address of magnetometer
 #endif  
 
+#define AHRS  true          // set to false for basic data read
+#define SerialDebug false  // set to true to print serial output for debugging
+
 // Set initial input parameters
 enum Ascale {
   AFS_2G = 0,
@@ -212,8 +215,8 @@ boolean blinkOn = false;
 int16_t accelCount[3];  // Stores the 16-bit signed accelerometer sensor output
 int16_t gyroCount[3];   // Stores the 16-bit signed gyro sensor output
 int16_t magCount[3];    // Stores the 16-bit signed magnetometer sensor output
- // Sensitivity adjustment values (factory calibration) in HEX
-float magCalibration[3] = {0, 0, 0,}, magbias[3] = {0, 0, 0}, accelBias[3] = {0, 0, 0,};   
+float magCalibration[3] = {0, 0, 0}, magbias[3] = {0, 0, 0};  // Factory mag calibration and mag bias
+float gyroBias[3] = {0, 0, 0}, accelBias[3] = {0, 0, 0};      // Bias corrections for gyro and accelerometer
 int16_t tempCount;     // Stores the raw internal chip temperature counts
 float temperature;     // temperature in degrees Centigrade
 float SelfTest[6];
@@ -308,7 +311,7 @@ void setup()
   delay(1000);
   }
   
-  calibrateMPU9150(accelBias); // Calibrate gyro and accelerometers, load biases in bias registers  
+  calibrateMPU9150(gyroBias, accelBias); // Calibrate gyro and accelerometers, load biases in bias registers  
   initMPU9150(); // Inititalize and configure accelerometer and gyroscope
   Serial.println("MPU9150 initialized for active data mode...."); // Initialize device for active mode read of acclerometer, gyroscope, and temperature
   
@@ -325,10 +328,12 @@ void setup()
   
   // Get magnetometer calibration from AK8975A ROM
   initAK8975A(magCalibration);
+  if(SerialDebug) {
   Serial.println("Magnetometer calibration values: ");
   Serial.print("X-Axis sensitivity adjustment value "); Serial.println(magCalibration[0], 2);
   Serial.print("Y-Axis sensitivity adjustment value "); Serial.println(magCalibration[1], 2);
   Serial.print("Z-Axis sensitivity adjustment value "); Serial.println(magCalibration[2], 2); 
+  }
  
   display.clearDisplay();
   display.setCursor(20,0); display.print("AK8975A");
@@ -365,9 +370,9 @@ void loop()
     getGres();
  
     // Calculate the gyro value into actual degrees per second
-    gx = (float)gyroCount[0]*gRes;  // get actual gyro value, this depends on scale being set
-    gy = (float)gyroCount[1]*gRes;  
-    gz = (float)gyroCount[2]*gRes;   
+    gx = (float)gyroCount[0]*gRes - gyroBias[0];  // get actual gyro value, this depends on scale being set
+    gy = (float)gyroCount[1]*gRes - gyroBias[1];  
+    gz = (float)gyroCount[2]*gRes - gyroBias[2];   
  
     mcount++;
     if (mcount > 200/MagRate) {  // this is a poor man's way of setting the magnetometer read rate (see below) 
@@ -386,14 +391,19 @@ void loop()
     mz = (float)magCount[2]*mRes*magCalibration[2] - magbias[2];   
     mcount = 0;
     }
+    
+    if(!AHRS) {
+    tempCount = readTempData();  // Read the x/y/z adc values
+    temperature = ((float) tempCount) / 340. + 36.53; // Temperature in degrees Centigrade
+    }
  }
  
   Now = micros();
   deltat = ((Now - lastUpdate)/1000000.0f); // set integration time by time elapsed since last filter update
   lastUpdate = Now;
-    if(lastUpdate - firstUpdate > 10000000.0f) {
+  if(lastUpdate - firstUpdate > 10000000.0f) {
     beta = 0.041;
-    }
+  }
   // Sensors x (y)-axis of the accelerometer is aligned with the y (x)-axis of the magnetometer;
   // the magnetometer z-axis (+ down) is opposite to z-axis (+ up) of accelerometer and gyro!
   // We have to make some allowance for this orientation mismatch in feeding the output to the quaternion filter.
@@ -404,29 +414,84 @@ void loop()
    MadgwickQuaternionUpdate(ax, ay, az, gx*PI/180.0f, gy*PI/180.0f, gz*PI/180.0f,  my,  mx, mz);
 // MahonyQuaternionUpdate(ax, ay, az, gx*PI/180.0f, gy*PI/180.0f, gz*PI/180.0f, my, mx, mz);
 
+
+    if (!AHRS) {
+    int delt_t = millis() - count;
+    if(delt_t > 500) {
+    digitalWrite(blinkPin, blinkOn);
+    
+      if(SerialDebug) {
+    // Print acceleration values in milligs!
+    Serial.print("X-acceleration: "); Serial.print(1000*ax); Serial.print(" mg "); 
+    Serial.print("Y-acceleration: "); Serial.print(1000*ay); Serial.print(" mg "); 
+    Serial.print("Z-acceleration: "); Serial.print(1000*az); Serial.println(" mg"); 
+ 
+    // Print gyro values in degree/sec
+    Serial.print("X-gyro rate: "); Serial.print(gx, 3); Serial.print(" degrees/sec "); 
+    Serial.print("Y-gyro rate: "); Serial.print(gy, 3); Serial.print(" degrees/sec "); 
+    Serial.print("Z-gyro rate: "); Serial.print(gz, 3); Serial.println(" degrees/sec"); 
+    
+    // Print mag values in degree/sec
+    Serial.print("X-mag field: "); Serial.print(mx); Serial.print(" mG "); 
+    Serial.print("Y-mag field: "); Serial.print(my); Serial.print(" mG "); 
+    Serial.print("Z-mag field: "); Serial.print(mz); Serial.println(" mG"); 
+ 
+   // Print temperature in degrees Centigrade      
+    Serial.print("Temperature is ");  Serial.print(temperature, 1);  Serial.println(" degrees C"); // Print T values to tenths of s degree C
+    Serial.println("");
+    }
+      
+    display.clearDisplay();
+     
+    display.setCursor(0, 0); display.print("MPU9150/AK8975");
+    display.setCursor(0, 8); display.print(" x   y   z  ");
+
+    display.setCursor(0,  16); display.print((int)(1000*ax)); 
+    display.setCursor(24, 16); display.print((int)(1000*ay)); 
+    display.setCursor(48, 16); display.print((int)(1000*az)); 
+    display.setCursor(72, 16); display.print("mg");
+    
+    display.setCursor(0,  24); display.print((int)(gx)); 
+    display.setCursor(24, 24); display.print((int)(gy)); 
+    display.setCursor(48, 24); display.print((int)(gz)); 
+    display.setCursor(66, 24); display.print("o/s");    
+        
+    display.setCursor(0,  32); display.print((int)(mx)); 
+    display.setCursor(24, 32); display.print((int)(my)); 
+    display.setCursor(48, 32); display.print((int)(mz)); 
+    display.setCursor(72, 32); display.print("mG");   
+   
+    display.setCursor(0,  40); display.print("Gyro T "); 
+    display.setCursor(50, 40); display.print(temperature, 1); display.print(" C");
+    display.display();
+    
+    blinkOn = ~blinkOn;
+    count = millis();
+    }
+    }
+    else {
+      
     // Serial print and/or display at 0.5 s rate independent of data rates
     delt_t = millis() - count;
     if (delt_t > 500) { // update LCD once per half-second independent of read rate
     digitalWrite(blinkPin, blinkOn);
     
-    Serial.print("ax = "); Serial.print(1000*ax);  
-    Serial.print(" ay = "); Serial.print(1000*ay); 
-    Serial.print(" az = "); Serial.print(1000*az); Serial.println(" mg");
-    Serial.print("gx = "); Serial.print(gx, 2); 
-    Serial.print(" gy = "); Serial.print(gy, 2); 
-    Serial.print(" gz = "); Serial.print(gz, 2); Serial.println(" deg/s");
-    Serial.print("mx = "); Serial.print(mx); 
-    Serial.print(" my = "); Serial.print(my); 
-    Serial.print(" mz = "); Serial.print(mz); Serial.println(" mG");
+    if(SerialDebug) {
+    Serial.print("ax = "); Serial.print((int)1000*ax);  
+    Serial.print(" ay = "); Serial.print((int)1000*ay); 
+    Serial.print(" az = "); Serial.print((int)1000*az); Serial.println(" mg");
+    Serial.print("gx = "); Serial.print( gx, 2); 
+    Serial.print(" gy = "); Serial.print( gy, 2); 
+    Serial.print(" gz = "); Serial.print( gz, 2); Serial.println(" deg/s");
+    Serial.print("mx = "); Serial.print( (int)mx ); 
+    Serial.print(" my = "); Serial.print( (int)my ); 
+    Serial.print(" mz = "); Serial.print( (int)mz ); Serial.println(" mG");
     
-    tempCount = readTempData();  // Read the x/y/z adc values
-    temperature = ((float) tempCount) / 340. + 36.53; // Temperature in degrees Centigrade
- //   Serial.print(" T = "); Serial.print(temperature, 1); Serial.println(" C");
-        
     Serial.print("q0 = "); Serial.print(q[0]);
     Serial.print(" qx = "); Serial.print(q[1]); 
     Serial.print(" qy = "); Serial.print(q[2]); 
-    Serial.print(" qz = "); Serial.println(q[3]);         
+    Serial.print(" qz = "); Serial.println(q[3]); 
+    }               
     
   // Define output variables from updated quaternion---these are Tait-Bryan angles, commonly used in aircraft orientation.
   // In this coordinate system, the positive z-axis is down toward Earth. 
@@ -445,6 +510,7 @@ void loop()
     yaw   -= 13.8; // Declination at Danville, California is 13 degrees 48 minutes and 47 seconds on 2014-04-04
     roll  *= 180.0f / PI;
 
+    if(SerialDebug) {
     Serial.print("Yaw, Pitch, Roll: ");
     Serial.print(yaw, 2);
     Serial.print(", ");
@@ -452,7 +518,8 @@ void loop()
     Serial.print(", ");
     Serial.println(roll, 2);
 
- //   Serial.print("average rate = "); Serial.print(1.0f/deltat, 2); Serial.println(" Hz");
+    Serial.print("average rate = "); Serial.print(1.0f/deltat, 2); Serial.println(" Hz");
+    }
     
     display.clearDisplay();
       
@@ -495,6 +562,7 @@ void loop()
     
     blinkOn = ~blinkOn;
     count = millis();  
+    }
 }
 
 }
@@ -717,15 +785,15 @@ void initMPU9150()
 
 // Function which accumulates gyro and accelerometer data after device initialization. It calculates the average
 // of the at-rest readings and then loads the resulting offsets into accelerometer and gyro bias registers.
-void calibrateMPU9150(float * destination)
+void calibrateMPU9150(float * dest1, float * dest2)
 {  
   uint8_t data[12]; // data array to hold accelerometer and gyro x, y, z, data
-  uint8_t ii, fifo_count, packet_count;
-  int16_t gyro_bias[3]  = {0, 0, 0}, accel_bias[3] = {0, 0, 0};
+  uint16_t ii, packet_count, fifo_count;
+  int32_t gyro_bias[3]  = {0, 0, 0}, accel_bias[3] = {0, 0, 0};
   
 // reset device, reset all registers, clear gyro and accelerometer bias registers
   writeByte(MPU9150_ADDRESS, PWR_MGMT_1, 0x80); // Write a one to bit 7 reset bit; toggle reset device
-  delay(100);
+  delay(100);  
    
 // get stable time source
 // Set clock source to be PLL with x-axis gyroscope reference, bits 2:0 = 001
@@ -747,38 +815,49 @@ void calibrateMPU9150(float * destination)
   writeByte(MPU9150_ADDRESS, SMPLRT_DIV, 0x00);  // Set sample rate to 1 kHz
   writeByte(MPU9150_ADDRESS, GYRO_CONFIG, 0x00);  // Set gyro full-scale to 250 degrees per second, maximum sensitivity
   writeByte(MPU9150_ADDRESS, ACCEL_CONFIG, 0x00); // Set accelerometer full-scale to 2 g, maximum sensitivity
-  delay(200);
  
   uint16_t  gyrosensitivity  = 131;   // = 131 LSB/degrees/sec
   uint16_t  accelsensitivity = 16384;  // = 16384 LSB/g
 
 // Configure FIFO to capture accelerometer and gyro data for bias calculation
   writeByte(MPU9150_ADDRESS, USER_CTRL, 0x40);   // Enable FIFO  
-  writeByte(MPU9150_ADDRESS, FIFO_EN, 0x78);     // Enable gyro and accelerometer sensors for FIFO  (max size 1024 bytes in MPU-9150)
+  writeByte(MPU9150_ADDRESS, FIFO_EN, 0x78);     // Enable gyro and accelerometer sensors for FIFO  (max size 1024 bytes in MPU-6050)
   delay(80); // accumulate 80 samples in 80 milliseconds = 960 bytes
 
 // At end of sample accumulation, turn off FIFO sensor read
   writeByte(MPU9150_ADDRESS, FIFO_EN, 0x00);        // Disable gyro and accelerometer sensors for FIFO
-  readBytes(MPU9150_ADDRESS, FIFO_COUNTH, 2, data); // read FIFO sample count
+  readBytes(MPU9150_ADDRESS, FIFO_COUNTH, 2, &data[0]); // read FIFO sample count
   fifo_count = ((uint16_t)data[0] << 8) | data[1];
   packet_count = fifo_count/12;// How many sets of full gyro and accelerometer data for averaging
-  
-  for (ii = 0; ii < packet_count; ii++) {
-    readBytes(MPU9150_ADDRESS, FIFO_R_W, 12, data); // read data for averaging
-    accel_bias[0] += (((int16_t)data[0] << 8) | data[1]); // Divide sum of FIFO gyro data by number of samples
-    accel_bias[1] += (((int16_t)data[2] << 8) | data[3]);
-    accel_bias[2] += (((int16_t)data[4] << 8) | data[5]) - accelsensitivity ; // assumes device facing up
-    gyro_bias[0]  += (((int16_t)data[6] << 8) | data[7]) ;
-    gyro_bias[1]  += (((int16_t)data[8] << 8) | data[9]) ;
-    gyro_bias[2]  += (((int16_t)data[10] << 8) | data[11]) ;
-}
-    accel_bias[0] /= packet_count;  // normalize to get average count bias
-    accel_bias[1] /= packet_count;
-    accel_bias[2] /= packet_count;
-    gyro_bias[0]  /= packet_count;   
-    gyro_bias[1]  /= packet_count;
-    gyro_bias[2]  /= packet_count;
 
+ for (ii = 0; ii < packet_count; ii++) {
+    int16_t accel_temp[3] = {0, 0, 0}, gyro_temp[3] = {0, 0, 0};
+    readBytes(MPU9150_ADDRESS, FIFO_R_W, 12, &data[0]); // read data for averaging
+    accel_temp[0] = (int16_t) (((int16_t)data[0] << 8) | data[1]  ) ;  // Form signed 16-bit integer for each sample in FIFO
+    accel_temp[1] = (int16_t) (((int16_t)data[2] << 8) | data[3]  ) ;
+    accel_temp[2] = (int16_t) (((int16_t)data[4] << 8) | data[5]  ) ;    
+    gyro_temp[0]  = (int16_t) (((int16_t)data[6] << 8) | data[7]  ) ;
+    gyro_temp[1]  = (int16_t) (((int16_t)data[8] << 8) | data[9]  ) ;
+    gyro_temp[2]  = (int16_t) (((int16_t)data[10] << 8) | data[11]) ;
+    
+    accel_bias[0] += (int32_t) accel_temp[0]; // Sum individual signed 16-bit biases to get accumulated signed 32-bit biases
+    accel_bias[1] += (int32_t) accel_temp[1];
+    accel_bias[2] += (int32_t) accel_temp[2];
+    gyro_bias[0]  += (int32_t) gyro_temp[0];
+    gyro_bias[1]  += (int32_t) gyro_temp[1];
+    gyro_bias[2]  += (int32_t) gyro_temp[2];
+            
+}
+    accel_bias[0] /= (int32_t) packet_count; // Normalize sums to get average count biases
+    accel_bias[1] /= (int32_t) packet_count;
+    accel_bias[2] /= (int32_t) packet_count;
+    gyro_bias[0]  /= (int32_t) packet_count;
+    gyro_bias[1]  /= (int32_t) packet_count;
+    gyro_bias[2]  /= (int32_t) packet_count;
+    
+  if(accel_bias[2] > 0L) {accel_bias[2] -= (int32_t) accelsensitivity;}  // Remove gravity from the z-axis accelerometer bias calculation
+  else {accel_bias[2] += (int32_t) accelsensitivity;}
+ 
 // Construct the gyro biases for push to the hardware gyro bias registers, which are reset to zero upon device startup
   data[0] = (-gyro_bias[0]/4  >> 8) & 0xFF; // Divide by 4 to get 32.9 LSB per deg/s to conform to expected bias input format
   data[1] = (-gyro_bias[0]/4)       & 0xFF; // Biases are additive, so change sign on calculated average gyro biases
@@ -786,14 +865,18 @@ void calibrateMPU9150(float * destination)
   data[3] = (-gyro_bias[1]/4)       & 0xFF;
   data[4] = (-gyro_bias[2]/4  >> 8) & 0xFF;
   data[5] = (-gyro_bias[2]/4)       & 0xFF;
-  
+
 // Push gyro biases to hardware registers
-  writeByte(MPU9150_ADDRESS, XG_OFFS_USRH, data[0]);
-  writeByte(MPU9150_ADDRESS, XG_OFFS_USRL, data[1]);
-  writeByte(MPU9150_ADDRESS, YG_OFFS_USRH, data[2]);
-  writeByte(MPU9150_ADDRESS, YG_OFFS_USRL, data[3]);
-  writeByte(MPU9150_ADDRESS, ZG_OFFS_USRH, data[4]);
-  writeByte(MPU9150_ADDRESS, ZG_OFFS_USRL, data[5]);
+//  writeByte(MPU9150_ADDRESS, XG_OFFS_USRH, data[0]); // might not be supported in MPU6050
+//  writeByte(MPU9150_ADDRESS, XG_OFFS_USRL, data[1]);
+//  writeByte(MPU9150_ADDRESS, YG_OFFS_USRH, data[2]);
+//  writeByte(MPU9150_ADDRESS, YG_OFFS_USRL, data[3]);
+//  writeByte(MPU9150_ADDRESS, ZG_OFFS_USRH, data[4]);
+//  writeByte(MPU9150_ADDRESS, ZG_OFFS_USRL, data[5]);
+
+  dest1[0] = (float) gyro_bias[0]/(float) gyrosensitivity; // construct gyro bias in deg/s for later manual subtraction
+  dest1[1] = (float) gyro_bias[1]/(float) gyrosensitivity;
+  dest1[2] = (float) gyro_bias[2]/(float) gyrosensitivity;
 
 // Construct the accelerometer biases for push to the hardware accelerometer bias registers. These registers contain
 // factory trim values which must be added to the calculated accelerometer biases; on boot up these registers will hold
@@ -815,12 +898,12 @@ void calibrateMPU9150(float * destination)
   for(ii = 0; ii < 3; ii++) {
     if(accel_bias_reg[ii] & mask) mask_bit[ii] = 0x01; // If temperature compensation bit is set, record that fact in mask_bit
   }
-  
+
   // Construct total accelerometer bias, including calculated average accelerometer bias from above
-  accel_bias_reg[0] -= accel_bias[0]/8; // Subtract calculated averaged accelerometer bias scaled to 2048 LSB/g (16 g full scale)
-  accel_bias_reg[1] -= accel_bias[1]/8;
-  accel_bias_reg[2] -= accel_bias[2]/8;
-  
+  accel_bias_reg[0] -= (int16_t) (accel_bias[0]/8); // Subtract calculated averaged accelerometer bias scaled to 2048 LSB/g (16 g full scale)
+  accel_bias_reg[1] -= (int16_t) (accel_bias[1]/8);
+  accel_bias_reg[2] -= (int16_t) (accel_bias[2]/8);
+ 
   data[0] = (accel_bias_reg[0] >> 8) & 0xFF;
   data[1] = (accel_bias_reg[0])      & 0xFF;
   data[1] = data[1] | mask_bit[0]; // preserve temperature compensation bit when writing back to accelerometer bias registers
@@ -830,21 +913,20 @@ void calibrateMPU9150(float * destination)
   data[4] = (accel_bias_reg[2] >> 8) & 0xFF;
   data[5] = (accel_bias_reg[2])      & 0xFF;
   data[5] = data[5] | mask_bit[2]; // preserve temperature compensation bit when writing back to accelerometer bias registers
- 
+
   // Push accelerometer biases to hardware registers
-//  writeByte(MPU9150_ADDRESS, XA_OFFSET_H, data[0]);
+//  writeByte(MPU9150_ADDRESS, XA_OFFSET_H, data[0]); // might not be supported in MPU6050
 //  writeByte(MPU9150_ADDRESS, XA_OFFSET_L_TC, data[1]);
 //  writeByte(MPU9150_ADDRESS, YA_OFFSET_H, data[2]);
 //  writeByte(MPU9150_ADDRESS, YA_OFFSET_L_TC, data[3]);
 //  writeByte(MPU9150_ADDRESS, ZA_OFFSET_H, data[4]);
- // writeByte(MPU9150_ADDRESS, ZA_OFFSET_L_TC, data[5]);
+//  writeByte(MPU9150_ADDRESS, ZA_OFFSET_L_TC, data[5]);
 
-// Output scaled accelerometer biases for subtraction in the main program
-    destination[0] = (float)accel_bias[0]/(float)accelsensitivity; 
-    destination[1] = (float)accel_bias[1]/(float)accelsensitivity;
-    destination[2] = (float)accel_bias[2]/(float)accelsensitivity;
-  }
-
+// Output scaled accelerometer biases for manual subtraction in the main program
+   dest2[0] = (float)accel_bias[0]/(float)accelsensitivity; 
+   dest2[1] = (float)accel_bias[1]/(float)accelsensitivity;
+   dest2[2] = (float)accel_bias[2]/(float)accelsensitivity;
+}
 
 // Accelerometer and gyroscope self test; check calibration wrt factory settings
 void MPU6050SelfTest(float * destination) // Should return percent deviation from factory trim values, +/- 14 or less deviation is a pass
