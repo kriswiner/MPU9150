@@ -312,6 +312,24 @@ void setup()
   }
   
   calibrateMPU9150(gyroBias, accelBias); // Calibrate gyro and accelerometers, load biases in bias registers  
+  display.clearDisplay();
+     
+  display.setCursor(0, 0); display.print("MPU9150 bias");
+  display.setCursor(0, 8); display.print(" x   y   z  ");
+
+  display.setCursor(0,  16); display.print((int)(1000*accelBias[0])); 
+  display.setCursor(24, 16); display.print((int)(1000*accelBias[1])); 
+  display.setCursor(48, 16); display.print((int)(1000*accelBias[2])); 
+  display.setCursor(72, 16); display.print("mg");
+    
+  display.setCursor(0,  24); display.print(gyroBias[0], 1); 
+  display.setCursor(24, 24); display.print(gyroBias[1], 1); 
+  display.setCursor(48, 24); display.print(gyroBias[2], 1); 
+  display.setCursor(66, 24); display.print("o/s");   
+ 
+  display.display();
+  delay(1000); 
+    
   initMPU9150(); // Inititalize and configure accelerometer and gyroscope
   Serial.println("MPU9150 initialized for active data mode...."); // Initialize device for active mode read of acclerometer, gyroscope, and temperature
   
@@ -362,17 +380,17 @@ void loop()
     getAres();
     
     // Now we'll calculate the accleration value into actual g's
-    ax = (float)accelCount[0]*aRes - accelBias[0];  // get actual g value, this depends on scale being set
-    ay = (float)accelCount[1]*aRes - accelBias[1];  // also subtract averaged accelerometer biases
-    az = (float)accelCount[2]*aRes - accelBias[2];  
+    ax = (float)accelCount[0]*aRes;  // get actual g value, this depends on scale being set
+    ay = (float)accelCount[1]*aRes;  // also subtract averaged accelerometer biases
+    az = (float)accelCount[2]*aRes;  
    
     readGyroData(gyroCount);  // Read the x/y/z adc values
     getGres();
  
     // Calculate the gyro value into actual degrees per second
-    gx = (float)gyroCount[0]*gRes - gyroBias[0];  // get actual gyro value, this depends on scale being set
-    gy = (float)gyroCount[1]*gRes - gyroBias[1];  
-    gz = (float)gyroCount[2]*gRes - gyroBias[2];   
+    gx = (float)gyroCount[0]*gRes;  // get actual gyro value, this depends on scale being set
+    gy = (float)gyroCount[1]*gRes;  
+    gz = (float)gyroCount[2]*gRes;   
  
     mcount++;
     if (mcount > 200/MagRate) {  // this is a poor man's way of setting the magnetometer read rate (see below) 
@@ -401,7 +419,7 @@ void loop()
   Now = micros();
   deltat = ((Now - lastUpdate)/1000000.0f); // set integration time by time elapsed since last filter update
   lastUpdate = Now;
-  if(lastUpdate - firstUpdate > 10000000.0f) {
+  if(lastUpdate - firstUpdate > 10000000uL) {
     beta = 0.041;
   }
   // Sensors x (y)-axis of the accelerometer is aligned with the y (x)-axis of the magnetometer;
@@ -420,7 +438,7 @@ void loop()
     if(delt_t > 500) {
     digitalWrite(blinkPin, blinkOn);
     
-      if(SerialDebug) {
+    if(SerialDebug) {
     // Print acceleration values in milligs!
     Serial.print("X-acceleration: "); Serial.print(1000*ax); Serial.print(" mg "); 
     Serial.print("Y-acceleration: "); Serial.print(1000*ay); Serial.print(" mg "); 
@@ -867,14 +885,15 @@ void calibrateMPU9150(float * dest1, float * dest2)
   data[5] = (-gyro_bias[2]/4)       & 0xFF;
 
 // Push gyro biases to hardware registers
-//  writeByte(MPU9150_ADDRESS, XG_OFFS_USRH, data[0]); // might not be supported in MPU6050
-//  writeByte(MPU9150_ADDRESS, XG_OFFS_USRL, data[1]);
-//  writeByte(MPU9150_ADDRESS, YG_OFFS_USRH, data[2]);
-//  writeByte(MPU9150_ADDRESS, YG_OFFS_USRL, data[3]);
-//  writeByte(MPU9150_ADDRESS, ZG_OFFS_USRH, data[4]);
-//  writeByte(MPU9150_ADDRESS, ZG_OFFS_USRL, data[5]);
+  writeByte(MPU9150_ADDRESS, XG_OFFS_USRH, data[0]);
+  writeByte(MPU9150_ADDRESS, XG_OFFS_USRL, data[1]);
+  writeByte(MPU9150_ADDRESS, YG_OFFS_USRH, data[2]);
+  writeByte(MPU9150_ADDRESS, YG_OFFS_USRL, data[3]);
+  writeByte(MPU9150_ADDRESS, ZG_OFFS_USRH, data[4]);
+  writeByte(MPU9150_ADDRESS, ZG_OFFS_USRL, data[5]);
 
-  dest1[0] = (float) gyro_bias[0]/(float) gyrosensitivity; // construct gyro bias in deg/s for later manual subtraction
+// Output scaled gyro biases for display in the main program
+  dest1[0] = (float) gyro_bias[0]/(float) gyrosensitivity;  
   dest1[1] = (float) gyro_bias[1]/(float) gyrosensitivity;
   dest1[2] = (float) gyro_bias[2]/(float) gyrosensitivity;
 
@@ -884,15 +903,15 @@ void calibrateMPU9150(float * dest1, float * dest2)
 // compensation calculations. Accelerometer bias registers expect bias input as 2048 LSB per g, so that
 // the accelerometer biases calculated above must be divided by 8.
 
-  int16_t accel_bias_reg[3] = {0, 0, 0}; // A place to hold the factory accelerometer trim biases
+  int32_t accel_bias_reg[3] = {0, 0, 0}; // A place to hold the factory accelerometer trim biases
   readBytes(MPU9150_ADDRESS, XA_OFFSET_H, 2, &data[0]); // Read factory accelerometer trim values
-  accel_bias_reg[0] = ((int16_t)data[0] << 8) | data[1];
+  accel_bias_reg[0] = (int16_t) ((int16_t)data[0] << 8) | data[1];
   readBytes(MPU9150_ADDRESS, YA_OFFSET_H, 2, &data[0]);
-  accel_bias_reg[1] = ((int16_t)data[0] << 8) | data[1];
+  accel_bias_reg[1] = (int16_t) ((int16_t)data[0] << 8) | data[1];
   readBytes(MPU9150_ADDRESS, ZA_OFFSET_H, 2, &data[0]);
-  accel_bias_reg[2] = ((int16_t)data[0] << 8) | data[1];
+  accel_bias_reg[2] = (int16_t) ((int16_t)data[0] << 8) | data[1];
   
-  uint16_t mask = 0x0001; // Define mask for temperature compensation bit 0 of lower byte of accelerometer bias registers
+  uint32_t mask = 1uL; // Define mask for temperature compensation bit 0 of lower byte of accelerometer bias registers
   uint8_t mask_bit[3] = {0, 0, 0}; // Define array to hold mask bit for each accelerometer bias axis
   
   for(ii = 0; ii < 3; ii++) {
@@ -900,9 +919,9 @@ void calibrateMPU9150(float * dest1, float * dest2)
   }
 
   // Construct total accelerometer bias, including calculated average accelerometer bias from above
-  accel_bias_reg[0] -= (int16_t) (accel_bias[0]/8); // Subtract calculated averaged accelerometer bias scaled to 2048 LSB/g (16 g full scale)
-  accel_bias_reg[1] -= (int16_t) (accel_bias[1]/8);
-  accel_bias_reg[2] -= (int16_t) (accel_bias[2]/8);
+  accel_bias_reg[0] -= (accel_bias[0]/8); // Subtract calculated averaged accelerometer bias scaled to 2048 LSB/g (16 g full scale)
+  accel_bias_reg[1] -= (accel_bias[1]/8);
+  accel_bias_reg[2] -= (accel_bias[2]/8);
  
   data[0] = (accel_bias_reg[0] >> 8) & 0xFF;
   data[1] = (accel_bias_reg[0])      & 0xFF;
@@ -915,14 +934,14 @@ void calibrateMPU9150(float * dest1, float * dest2)
   data[5] = data[5] | mask_bit[2]; // preserve temperature compensation bit when writing back to accelerometer bias registers
 
   // Push accelerometer biases to hardware registers
-//  writeByte(MPU9150_ADDRESS, XA_OFFSET_H, data[0]); // might not be supported in MPU6050
-//  writeByte(MPU9150_ADDRESS, XA_OFFSET_L_TC, data[1]);
-//  writeByte(MPU9150_ADDRESS, YA_OFFSET_H, data[2]);
-//  writeByte(MPU9150_ADDRESS, YA_OFFSET_L_TC, data[3]);
-//  writeByte(MPU9150_ADDRESS, ZA_OFFSET_H, data[4]);
-//  writeByte(MPU9150_ADDRESS, ZA_OFFSET_L_TC, data[5]);
+  writeByte(MPU9150_ADDRESS, XA_OFFSET_H, data[0]);
+  writeByte(MPU9150_ADDRESS, YA_OFFSET_H, data[1]);
+  writeByte(MPU9150_ADDRESS, YA_OFFSET_H, data[2]);
+  writeByte(MPU9150_ADDRESS, YA_OFFSET_L_TC, data[3]);
+  writeByte(MPU9150_ADDRESS, ZA_OFFSET_H, data[4]);
+  writeByte(MPU9150_ADDRESS, ZA_OFFSET_L_TC, data[5]);
 
-// Output scaled accelerometer biases for manual subtraction in the main program
+// Output scaled accelerometer biases for display in the main program
    dest2[0] = (float)accel_bias[0]/(float)accelsensitivity; 
    dest2[1] = (float)accel_bias[1]/(float)accelsensitivity;
    dest2[2] = (float)accel_bias[2]/(float)accelsensitivity;
