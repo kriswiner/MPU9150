@@ -11,7 +11,7 @@
             float hx, hy, _2bx, _2bz;
             float s1, s2, s3, s4;
             float qDot1, qDot2, qDot3, qDot4;
-            float gerrx, gerry, gerrz, gbiasx, gbiasy, gbiasz;        // gyro bias error
+//            float gerrx, gerry, gerrz, gbiasx, gbiasy, gbiasz;        // gyro bias error
 
             // Auxiliary variables to avoid repeated arithmetic
             float _2q1mx;
@@ -77,7 +77,7 @@
             s3 *= norm;
             s4 *= norm;
 
-            // Compute estimated gyroscope biases
+/*            // Compute estimated gyroscope biases
             gerrx = _2q1 * s2 - _2q2 * s1 - _2q3 * s4 + _2q4 * s3;
             gerry = _2q1 * s3 + _2q2 * s4 - _2q3 * s1 - _2q4 * s2;
             gerrz = _2q1 * s4 - _2q2 * s3 + _2q3 * s2 - _2q4 * s1;
@@ -89,7 +89,7 @@
             gx -= gbiasx;
             gy -= gbiasy;
             gz -= gbiasz;
-
+*/
             // Compute rate of change of quaternion
             qDot1 = 0.5f * (-q2 * gx - q3 * gy - q4 * gz) - beta * s1;
             qDot2 = 0.5f * ( q1 * gx + q3 * gz - q4 * gy) - beta * s2;
