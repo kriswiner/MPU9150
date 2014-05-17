@@ -4,7 +4,7 @@
  license: Beerware - Use this code however you'd like. If you 
  find it useful you can buy me a beer some time.
  
- Demonstrate basic functionality including parameterizing the register addresses, initializing the sensor, 
+ Demonstrate MPU-9150 basic functionality including parameterizing the register addresses, initializing the sensor, 
  getting properly scaled accelerometer, gyroscope, and magnetometer data out. Added display functions to 
  allow display to on breadboard monitor. Addition of 9 DoF sensor fusion using open source Madgwick and 
  Mahony filter algorithms. Sketch runs on the 3.3 V 8 MHz Pro Mini and the Teensy 3.1.
@@ -19,7 +19,7 @@
  SCL ----------------------- A5
  GND ---------------------- GND
  
- Note: The MPU9250 is an I2C sensor and uses the Arduino Wire library. 
+ Note: The MPU9150 is an I2C sensor and uses the Arduino Wire library. 
  Because the sensor is not 5V tolerant, we are using a 3.3 V 8 MHz Pro Mini or a 3.3 V Teensy 3.1.
  We have disabled the internal pull-ups used by the Wire library in the Wire.h/twi.c utility file.
  We are also using the 400 kHz fast I2C mode by setting the TWI_FREQ  to 400000L /twi.h utility file.
@@ -314,7 +314,7 @@ void setup()
   calibrateMPU9150(gyroBias, accelBias); // Calibrate gyro and accelerometers, load biases in bias registers  
   display.clearDisplay();
      
-  display.setCursor(0, 0); display.print("MPU9150 bias");
+  display.setCursor(20, 0); display.print("MPU9150 bias");
   display.setCursor(0, 8); display.print(" x   y   z  ");
 
   display.setCursor(0,  16); display.print((int)(1000*accelBias[0])); 
