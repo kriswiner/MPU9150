@@ -381,8 +381,8 @@ void loop()
     
     // Now we'll calculate the accleration value into actual g's
     ax = (float)accelCount[0]*aRes;  // get actual g value, this depends on scale being set
-    ay = (float)accelCount[1]*aRes;  // also subtract averaged accelerometer biases
-    az = (float)accelCount[2]*aRes;  
+    ay = (float)accelCount[1]*aRes;   
+    az = (float)accelCount[2]*aRes;    
    
     readGyroData(gyroCount);  // Read the x/y/z adc values
     getGres();
@@ -419,9 +419,7 @@ void loop()
   Now = micros();
   deltat = ((Now - lastUpdate)/1000000.0f); // set integration time by time elapsed since last filter update
   lastUpdate = Now;
-  if(lastUpdate - firstUpdate > 10000000uL) {
-    beta = 0.041;
-  }
+
   // Sensors x (y)-axis of the accelerometer is aligned with the y (x)-axis of the magnetometer;
   // the magnetometer z-axis (+ down) is opposite to z-axis (+ up) of accelerometer and gyro!
   // We have to make some allowance for this orientation mismatch in feeding the output to the quaternion filter.
