@@ -933,7 +933,7 @@ void calibrateMPU9150(float * dest1, float * dest2)
 
   // Push accelerometer biases to hardware registers
   writeByte(MPU9150_ADDRESS, XA_OFFSET_H, data[0]);
-  writeByte(MPU9150_ADDRESS, YA_OFFSET_H, data[1]);
+  writeByte(MPU9150_ADDRESS, XA_OFFSET_L_TC, data[1]);
   writeByte(MPU9150_ADDRESS, YA_OFFSET_H, data[2]);
   writeByte(MPU9150_ADDRESS, YA_OFFSET_L_TC, data[3]);
   writeByte(MPU9150_ADDRESS, ZA_OFFSET_H, data[4]);
