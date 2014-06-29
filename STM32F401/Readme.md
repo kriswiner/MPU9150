@@ -1,0 +1,1 @@
+Basic code to obtain properly-scaled gyro, accelerometer, and magnetometer data from the MPI-9150 9-axis motion sensor. Compiled with mbed.org's compiler for use on the STM32F401RE Nucleo board and other compatible boards. With the processor running at 84 MHz, the sensor fusion filters can achieve filter update rates of ~5000 Hz.
